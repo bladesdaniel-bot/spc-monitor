@@ -2,13 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/bladesdaniel-bot/spc-monitor/internal/spc"
 	"github.com/bladesdaniel-bot/spc-monitor/internal/store"
 )
+
+const defaultBaseline = 20
 
 type server struct {
 	store *store.Store
@@ -29,6 +33,7 @@ func main() {
 	mux.HandleFunc("POST /measurements", srv.addMeasurement)
 	mux.HandleFunc("GET /measurements", srv.listMeasurements)
 	mux.HandleFunc("GET /limits", srv.getLimits)
+	mux.HandleFunc("GET /violations", srv.getViolations)
 
 	addr := ":8090"
 	log.Printf("spc-monitor listening on %s", addr)
@@ -90,24 +95,61 @@ func (s *server) listMeasurements(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.store.Get(station, characteristic))
 }
 
-func (s *server) getLimits(w http.ResponseWriter, r *http.Request) {
+// baseline loads a series and computes limits from its first N readings.
+// It writes an error response and returns ok=false if anything is missing.
+func (s *server) baseline(w http.ResponseWriter, r *http.Request) ([]float64, spc.Limits, bool) {
 	station := r.URL.Query().Get("station")
 	characteristic := r.URL.Query().Get("characteristic")
 	if station == "" || characteristic == "" {
 		writeError(w, http.StatusBadRequest, "station and characteristic query params are required")
-		return
+		return nil, spc.Limits{}, false
+	}
+
+	n := defaultBaseline
+	if q := r.URL.Query().Get("baseline"); q != "" {
+		v, err := strconv.Atoi(q)
+		if err != nil || v < 2 {
+			writeError(w, http.StatusBadRequest, "baseline must be a whole number of at least 2")
+			return nil, spc.Limits{}, false
+		}
+		n = v
 	}
 
 	data := s.store.Get(station, characteristic)
+	if len(data) < n {
+		writeError(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("need %d readings for a baseline, have %d", n, len(data)))
+		return nil, spc.Limits{}, false
+	}
+
 	values := make([]float64, len(data))
 	for i, m := range data {
 		values[i] = m.Value
 	}
 
-	limits, err := spc.ComputeLimits(values)
+	limits, err := spc.ComputeLimits(values[:n])
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return nil, spc.Limits{}, false
+	}
+	return values, limits, true
+}
+
+func (s *server) getLimits(w http.ResponseWriter, r *http.Request) {
+	_, limits, ok := s.baseline(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, limits)
+}
+
+func (s *server) getViolations(w http.ResponseWriter, r *http.Request) {
+	values, limits, ok := s.baseline(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"limits":     limits,
+		"violations": spc.Check(values, limits),
+	})
 }
