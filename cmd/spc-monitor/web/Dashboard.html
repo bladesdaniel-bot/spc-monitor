@@ -28,6 +28,7 @@
   .badge.ok { background: var(--ok); }
   .badge.bad { background: var(--bad); }
   .badge.wait { background: var(--wait); color: var(--text); }
+  .chart-label { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
   .chart { width: 100%; height: auto; display: block; }
   .chart .baseline { fill: var(--base); }
   .chart .zone { stroke: var(--zone); stroke-width: 1; }
@@ -52,6 +53,7 @@
 
 <script>
 const REFRESH_MS = 2000;
+const W = 800, PAD = { l: 50, r: 20 };
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -64,36 +66,55 @@ async function getJSON(url) {
   return body;
 }
 
-function drawChart(values, limits, violations) {
-  const W = 800, H = 260, P = { l: 50, r: 20, t: 15, b: 20 };
+// Shared x scale, so each MR dot sits directly under the reading where the jump landed.
+function xScale(count) {
+  return i => PAD.l + (count <= 1 ? 0 : i * (W - PAD.l - PAD.r) / (count - 1));
+}
+
+function svgHelpers(y) {
+  return {
+    hline: (v, cls) => `<line x1="${PAD.l}" x2="${W - PAD.r}" y1="${y(v)}" y2="${y(v)}" class="${cls}"/>`,
+    label: (v, text) => `<text x="${W - PAD.r}" y="${y(v) - 4}" text-anchor="end" class="lbl">${text}</text>`,
+  };
+}
+
+function baselineRect(x, limits, count, top, height) {
+  const bx = x(Math.min(limits.n, count) - 1);
+  return `<rect x="${PAD.l}" y="${top}" width="${Math.max(bx - PAD.l, 0)}" height="${height}" class="baseline"/>`;
+}
+
+function groupByIndex(violations, prefix) {
+  const m = new Map();
+  for (const v of violations) {
+    if (!m.has(v.index)) m.set(v.index, []);
+    m.get(v.index).push(`${prefix}Rule ${v.rule}: ${v.description}`);
+  }
+  return m;
+}
+
+function drawIndividuals(values, limits, violations) {
+  const H = 260, T = 15, B = 20;
   let lo = Math.min(...values), hi = Math.max(...values);
   if (limits) { lo = Math.min(lo, limits.lcl); hi = Math.max(hi, limits.ucl); }
   const pad = (hi - lo) * 0.08 || 0.01;
   lo -= pad; hi += pad;
 
-  const x = i => P.l + (values.length <= 1 ? 0 : i * (W - P.l - P.r) / (values.length - 1));
-  const y = v => P.t + (hi - v) * (H - P.t - P.b) / (hi - lo);
-  const hline = (yy, cls) => `<line x1="${P.l}" x2="${W - P.r}" y1="${yy}" y2="${yy}" class="${cls}"/>`;
-  const label = (yy, text) => `<text x="${W - P.r}" y="${yy - 4}" text-anchor="end" class="lbl">${text}</text>`;
-
-  const rulesAt = new Map();
-  for (const v of violations) {
-    if (!rulesAt.has(v.index)) rulesAt.set(v.index, []);
-    rulesAt.get(v.index).push(`Rule ${v.rule}: ${v.description}`);
-  }
+  const x = xScale(values.length);
+  const y = v => T + (hi - v) * (H - T - B) / (hi - lo);
+  const { hline, label } = svgHelpers(y);
+  const rulesAt = groupByIndex(violations, "");
 
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="chart">`;
   if (limits) {
-    const bx = x(Math.min(limits.n, values.length) - 1);
-    svg += `<rect x="${P.l}" y="${P.t}" width="${Math.max(bx - P.l, 0)}" height="${H - P.t - P.b}" class="baseline"/>`;
-    for (const k of [-2, -1, 1, 2]) svg += hline(y(limits.center + k * limits.sigma), "zone");
-    svg += hline(y(limits.ucl), "limit") + hline(y(limits.lcl), "limit") + hline(y(limits.center), "center");
-    svg += label(y(limits.ucl), "UCL " + limits.ucl.toFixed(3));
-    svg += label(y(limits.center), "CL " + limits.center.toFixed(3));
-    svg += label(y(limits.lcl), "LCL " + limits.lcl.toFixed(3));
+    svg += baselineRect(x, limits, values.length, T, H - T - B);
+    for (const k of [-2, -1, 1, 2]) svg += hline(limits.center + k * limits.sigma, "zone");
+    svg += hline(limits.ucl, "limit") + hline(limits.lcl, "limit") + hline(limits.center, "center");
+    svg += label(limits.ucl, "UCL " + limits.ucl.toFixed(3));
+    svg += label(limits.center, "CL " + limits.center.toFixed(3));
+    svg += label(limits.lcl, "LCL " + limits.lcl.toFixed(3));
   }
-  svg += `<text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end" class="lbl">${hi.toFixed(2)}</text>`;
-  svg += `<text x="${P.l - 6}" y="${H - P.b}" text-anchor="end" class="lbl">${lo.toFixed(2)}</text>`;
+  svg += `<text x="${PAD.l - 6}" y="${T + 10}" text-anchor="end" class="lbl">${hi.toFixed(2)}</text>`;
+  svg += `<text x="${PAD.l - 6}" y="${H - B}" text-anchor="end" class="lbl">${lo.toFixed(2)}</text>`;
   svg += `<polyline class="series" points="${values.map((v, i) => `${x(i)},${y(v)}`).join(" ")}"/>`;
 
   values.forEach((v, i) => {
@@ -104,27 +125,67 @@ function drawChart(values, limits, violations) {
   return svg + "</svg>";
 }
 
+function drawMovingRange(values, limits, mrViolations) {
+  const H = 140, T = 12, B = 16;
+  const pts = [];
+  for (let i = 1; i < values.length; i++) pts.push([i, Math.abs(values[i] - values[i - 1])]);
+  const hi = Math.max(limits.mrUcl, ...pts.map(p => p[1])) * 1.1 || 0.01;
+
+  const x = xScale(values.length);
+  const y = v => T + (hi - v) * (H - T - B) / hi;
+  const { hline, label } = svgHelpers(y);
+  const rulesAt = groupByIndex(mrViolations, "MR ");
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="chart">`;
+  svg += baselineRect(x, limits, values.length, T, H - T - B);
+  svg += hline(0, "zone") + hline(limits.mrUcl, "limit") + hline(limits.mrBar, "center");
+  svg += label(limits.mrUcl, "UCL " + limits.mrUcl.toFixed(3));
+  svg += label(limits.mrBar, "MR-bar " + limits.mrBar.toFixed(3));
+  svg += `<text x="${PAD.l - 6}" y="${T + 10}" text-anchor="end" class="lbl">${hi.toFixed(2)}</text>`;
+  svg += `<text x="${PAD.l - 6}" y="${H - B}" text-anchor="end" class="lbl">0</text>`;
+  svg += `<polyline class="series" points="${pts.map(([i, m]) => `${x(i)},${y(m)}`).join(" ")}"/>`;
+
+  pts.forEach(([i, m]) => {
+    const rules = rulesAt.get(i);
+    const tip = `#${i}  jump ${m.toFixed(3)}` + (rules ? "\n" + rules.join("\n") : "");
+    svg += `<circle cx="${x(i)}" cy="${y(m)}" r="${rules ? 5 : 2.5}" class="pt${rules ? " badpt" : ""}"><title>${esc(tip)}</title></circle>`;
+  });
+  return svg + "</svg>";
+}
+
 async function renderSeries(s) {
   const q = `station=${encodeURIComponent(s.station)}&characteristic=${encodeURIComponent(s.characteristic)}`;
   const data = await getJSON("/measurements?" + q);
   const values = data.map(m => m.value);
 
-  let limits = null, violations = [], note = "";
+  let limits = null, violations = [], mrViolations = [], note = "";
   try {
     const v = await getJSON("/violations?" + q);
     limits = v.limits;
     violations = v.violations;
+    mrViolations = v.mrViolations || [];
   } catch (e) {
     note = e.message;
   }
 
+  const total = violations.length + mrViolations.length;
   let badge;
   if (!limits) badge = `<span class="badge wait">Collecting baseline</span>`;
-  else if (violations.length) badge = `<span class="badge bad">${violations.length} alert${violations.length === 1 ? "" : "s"}</span>`;
+  else if (total) badge = `<span class="badge bad">${total} alert${total === 1 ? "" : "s"}</span>`;
   else badge = `<span class="badge ok">In control</span>`;
 
-  const recent = violations.slice(-5).reverse()
-    .map(v => `<li>#${v.index}  ${v.value.toFixed(3)} &mdash; Rule ${v.rule}: ${esc(v.description)}</li>`).join("");
+  const all = [
+    ...violations.map(v => ({ ...v, tag: "" })),
+    ...mrViolations.map(v => ({ ...v, tag: "MR " })),
+  ].sort((a, b) => a.index - b.index);
+  const recent = all.slice(-5).reverse()
+    .map(v => `<li>#${v.index}  ${v.value.toFixed(3)} &mdash; ${v.tag}Rule ${v.rule}: ${esc(v.description)}</li>`).join("");
+
+  let charts = "";
+  if (values.length) {
+    charts += `<div class="chart-label">Individuals</div>` + drawIndividuals(values, limits, violations);
+    if (limits && values.length > 1) charts += `<div class="chart-label">Moving range</div>` + drawMovingRange(values, limits, mrViolations);
+  }
 
   const card = document.createElement("section");
   card.className = "card";
@@ -133,7 +194,7 @@ async function renderSeries(s) {
       <div class="title">${esc(s.station)} <span>&middot; ${esc(s.characteristic)} &middot; ${values.length} readings</span></div>
       ${badge}
     </div>
-    ${values.length ? drawChart(values, limits, violations) : ""}
+    ${charts}
     ${note ? `<p class="note">${esc(note)}</p>` : ""}
     ${recent ? `<ul class="alerts">${recent}</ul>` : ""}`;
   return card;

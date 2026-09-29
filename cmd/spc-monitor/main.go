@@ -164,8 +164,9 @@ func (s *server) getViolations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"limits":     limits,
-		"violations": spc.Check(values, limits),
+		"limits":       limits,
+		"violations":   spc.Check(values, limits),
+		"mrViolations": spc.CheckMR(values, limits),
 	})
 }
 
