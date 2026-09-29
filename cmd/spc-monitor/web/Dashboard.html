@@ -9,6 +9,7 @@
     --bg: #0f1419; --card: #1a2029; --text: #e6e8eb; --muted: #8b95a3;
     --line: #5aa9e6; --center: #9aa5b1; --limit: #e5534b; --zone: #2c3440;
     --ok: #3fb950; --bad: #e5534b; --wait: #6e7681; --base: rgba(90,169,230,0.06);
+    --spec: #d29922;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -28,16 +29,26 @@
   .badge.ok { background: var(--ok); }
   .badge.bad { background: var(--bad); }
   .badge.wait { background: var(--wait); color: var(--text); }
+  .cap { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 2px; }
+  .cap div { background: var(--bg); border-radius: 8px; padding: 6px 14px; min-width: 76px; }
+  .cap .k { color: var(--muted); font-size: 11px; }
+  .cap .v { font-size: 18px; font-weight: 600; }
+  .cap .good { color: var(--ok); }
+  .cap .warn { color: var(--spec); }
+  .cap .poor { color: var(--bad); }
+  .cap-note { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
   .chart-label { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
   .chart { width: 100%; height: auto; display: block; }
   .chart .baseline { fill: var(--base); }
   .chart .zone { stroke: var(--zone); stroke-width: 1; }
   .chart .center { stroke: var(--center); stroke-width: 1.5; }
   .chart .limit { stroke: var(--limit); stroke-width: 1.5; stroke-dasharray: 6 4; }
+  .chart .spec { stroke: var(--spec); stroke-width: 1.5; }
   .chart .series { fill: none; stroke: var(--line); stroke-width: 1.5; }
   .chart .pt { fill: var(--line); }
   .chart .pt.badpt { fill: var(--bad); }
   .chart .lbl { fill: var(--muted); font-size: 11px; }
+  .chart .lbl.speclbl { fill: var(--spec); }
   .alerts { margin: 10px 0 0; padding: 0; list-style: none; font-size: 13px; }
   .alerts li { color: var(--bad); padding: 2px 0; }
   .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
@@ -75,6 +86,7 @@ function svgHelpers(y) {
   return {
     hline: (v, cls) => `<line x1="${PAD.l}" x2="${W - PAD.r}" y1="${y(v)}" y2="${y(v)}" class="${cls}"/>`,
     label: (v, text) => `<text x="${W - PAD.r}" y="${y(v) - 4}" text-anchor="end" class="lbl">${text}</text>`,
+    leftLabel: (v, text, cls) => `<text x="${PAD.l + 4}" y="${y(v) - 4}" class="lbl ${cls}">${text}</text>`,
   };
 }
 
@@ -92,16 +104,17 @@ function groupByIndex(violations, prefix) {
   return m;
 }
 
-function drawIndividuals(values, limits, violations) {
+function drawIndividuals(values, limits, violations, spec) {
   const H = 260, T = 15, B = 20;
   let lo = Math.min(...values), hi = Math.max(...values);
   if (limits) { lo = Math.min(lo, limits.lcl); hi = Math.max(hi, limits.ucl); }
+  if (spec) { lo = Math.min(lo, spec.lsl); hi = Math.max(hi, spec.usl); }
   const pad = (hi - lo) * 0.08 || 0.01;
   lo -= pad; hi += pad;
 
   const x = xScale(values.length);
   const y = v => T + (hi - v) * (H - T - B) / (hi - lo);
-  const { hline, label } = svgHelpers(y);
+  const { hline, label, leftLabel } = svgHelpers(y);
   const rulesAt = groupByIndex(violations, "");
 
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="chart">`;
@@ -112,6 +125,11 @@ function drawIndividuals(values, limits, violations) {
     svg += label(limits.ucl, "UCL " + limits.ucl.toFixed(3));
     svg += label(limits.center, "CL " + limits.center.toFixed(3));
     svg += label(limits.lcl, "LCL " + limits.lcl.toFixed(3));
+  }
+  if (spec) {
+    svg += hline(spec.usl, "spec") + hline(spec.lsl, "spec");
+    svg += leftLabel(spec.usl, "USL " + spec.usl.toFixed(3), "speclbl");
+    svg += leftLabel(spec.lsl, "LSL " + spec.lsl.toFixed(3), "speclbl");
   }
   svg += `<text x="${PAD.l - 6}" y="${T + 10}" text-anchor="end" class="lbl">${hi.toFixed(2)}</text>`;
   svg += `<text x="${PAD.l - 6}" y="${H - B}" text-anchor="end" class="lbl">${lo.toFixed(2)}</text>`;
@@ -153,17 +171,28 @@ function drawMovingRange(values, limits, mrViolations) {
   return svg + "</svg>";
 }
 
+// Automotive benchmarks: 1.33+ capable, 1.0 to 1.33 marginal, below 1.0 not capable.
+function capClass(v) { return v >= 1.33 ? "good" : v >= 1 ? "warn" : "poor"; }
+
+function capabilityPanel(cap) {
+  const tile = (k, v) => `<div><div class="k">${k}</div><div class="v ${capClass(v)}">${v.toFixed(2)}</div></div>`;
+  return `<div class="cap">${tile("Cp", cap.cp)}${tile("Cpk", cap.cpk)}${tile("Pp", cap.pp)}${tile("Ppk", cap.ppk)}</div>
+    <p class="cap-note">Last ${cap.n} readings &middot; mean ${cap.mean.toFixed(3)} &middot; 1.33+ capable, 1.00 to 1.33 marginal, below 1.00 not capable</p>`;
+}
+
 async function renderSeries(s) {
   const q = `station=${encodeURIComponent(s.station)}&characteristic=${encodeURIComponent(s.characteristic)}`;
   const data = await getJSON("/measurements?" + q);
   const values = data.map(m => m.value);
 
-  let limits = null, violations = [], mrViolations = [], note = "";
+  let limits = null, violations = [], mrViolations = [], spec = null, cap = null, note = "";
   try {
     const v = await getJSON("/violations?" + q);
     limits = v.limits;
     violations = v.violations;
     mrViolations = v.mrViolations || [];
+    spec = v.spec || null;
+    cap = v.capability || null;
   } catch (e) {
     note = e.message;
   }
@@ -183,7 +212,7 @@ async function renderSeries(s) {
 
   let charts = "";
   if (values.length) {
-    charts += `<div class="chart-label">Individuals</div>` + drawIndividuals(values, limits, violations);
+    charts += `<div class="chart-label">Individuals</div>` + drawIndividuals(values, limits, violations, spec);
     if (limits && values.length > 1) charts += `<div class="chart-label">Moving range</div>` + drawMovingRange(values, limits, mrViolations);
   }
 
@@ -194,6 +223,7 @@ async function renderSeries(s) {
       <div class="title">${esc(s.station)} <span>&middot; ${esc(s.characteristic)} &middot; ${values.length} readings</span></div>
       ${badge}
     </div>
+    ${cap ? capabilityPanel(cap) : ""}
     ${charts}
     ${note ? `<p class="note">${esc(note)}</p>` : ""}
     ${recent ? `<ul class="alerts">${recent}</ul>` : ""}`;
