@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bladesdaniel-bot/spc-monitor/internal/spc"
 	"github.com/bladesdaniel-bot/spc-monitor/internal/store"
 )
 
@@ -27,6 +28,7 @@ func main() {
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("POST /measurements", srv.addMeasurement)
 	mux.HandleFunc("GET /measurements", srv.listMeasurements)
+	mux.HandleFunc("GET /limits", srv.getLimits)
 
 	addr := ":8090"
 	log.Printf("spc-monitor listening on %s", addr)
@@ -86,4 +88,26 @@ func (s *server) listMeasurements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.store.Get(station, characteristic))
+}
+
+func (s *server) getLimits(w http.ResponseWriter, r *http.Request) {
+	station := r.URL.Query().Get("station")
+	characteristic := r.URL.Query().Get("characteristic")
+	if station == "" || characteristic == "" {
+		writeError(w, http.StatusBadRequest, "station and characteristic query params are required")
+		return
+	}
+
+	data := s.store.Get(station, characteristic)
+	values := make([]float64, len(data))
+	for i, m := range data {
+		values[i] = m.Value
+	}
+
+	limits, err := spc.ComputeLimits(values)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
 }
