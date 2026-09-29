@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +12,9 @@ import (
 	"github.com/bladesdaniel-bot/spc-monitor/internal/spc"
 	"github.com/bladesdaniel-bot/spc-monitor/internal/store"
 )
+
+//go:embed web/Dashboard.html
+var dashboardHTML []byte
 
 const defaultBaseline = 20
 
@@ -29,7 +33,9 @@ func main() {
 	srv := &server{store: store.New()}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", serveDashboard)
 	mux.HandleFunc("GET /health", healthHandler)
+	mux.HandleFunc("GET /series", srv.listSeries)
 	mux.HandleFunc("POST /measurements", srv.addMeasurement)
 	mux.HandleFunc("GET /measurements", srv.listMeasurements)
 	mux.HandleFunc("GET /limits", srv.getLimits)
@@ -50,11 +56,20 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func serveDashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(dashboardHTML)
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
 		"service": "spc-monitor",
 	})
+}
+
+func (s *server) listSeries(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.Series())
 }
 
 func (s *server) addMeasurement(w http.ResponseWriter, r *http.Request) {
