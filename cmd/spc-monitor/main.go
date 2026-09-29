@@ -43,7 +43,7 @@ func main() {
 
 	addr := ":8090"
 	log.Printf("spc-monitor listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	log.Fatal(http.ListenAndServe(addr, withCORS(mux)))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -166,5 +166,23 @@ func (s *server) getViolations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"limits":     limits,
 		"violations": spc.Check(values, limits),
+	})
+}
+
+// withCORS lets browser pages (like the plant simulator) send readings to the monitor.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
+			h.Set("Access-Control-Allow-Private-Network", "true")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
