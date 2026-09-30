@@ -3,9 +3,13 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -17,7 +21,10 @@ import (
 //go:embed web/Dashboard.html
 var dashboardHTML []byte
 
-const defaultBaseline = 20
+const (
+	addr            = ":8090"
+	defaultBaseline = 20
+)
 
 type server struct {
 	store *store.Store
@@ -40,21 +47,49 @@ type specRequest struct {
 }
 
 func main() {
+	noBrowser := flag.Bool("no-browser", false, "don't open the dashboard in a browser on startup")
+	flag.Parse()
+
 	srv := &server{store: store.New(), specs: make(map[string]spc.Spec)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", serveDashboard)
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /series", srv.listSeries)
+	mux.HandleFunc("DELETE /series", srv.clearSeries)
 	mux.HandleFunc("POST /measurements", srv.addMeasurement)
 	mux.HandleFunc("GET /measurements", srv.listMeasurements)
 	mux.HandleFunc("GET /limits", srv.getLimits)
 	mux.HandleFunc("GET /violations", srv.getViolations)
 	mux.HandleFunc("PUT /specs", srv.setSpec)
 
-	addr := ":8090"
-	log.Printf("spc-monitor listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, withCORS(mux)))
+	// Claim the port first, so the browser only opens once the server is really ready.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("cannot listen on %s: %v (is the monitor already running?)", addr, err)
+	}
+	url := "http://localhost" + addr
+	log.Printf("spc-monitor listening on %s, dashboard at %s", addr, url)
+	if !*noBrowser {
+		openBrowser(url)
+	}
+	log.Fatal(http.Serve(ln, withCORS(mux)))
+}
+
+// openBrowser opens the dashboard in the system's default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("could not open a browser (%v); visit %s", err, url)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -85,6 +120,28 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) listSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.store.Series())
+}
+
+// clearSeries removes readings so charts and baselines start fresh.
+// With station and characteristic it clears one series; with neither it clears everything.
+// Spec limits are kept.
+func (s *server) clearSeries(w http.ResponseWriter, r *http.Request) {
+	station := r.URL.Query().Get("station")
+	characteristic := r.URL.Query().Get("characteristic")
+
+	var removed int
+	switch {
+	case station == "" && characteristic == "":
+		removed = s.store.ClearAll()
+	case station != "" && characteristic != "":
+		removed = s.store.ClearSeries(station, characteristic)
+	default:
+		writeError(w, http.StatusBadRequest, "give both station and characteristic to clear one series, or neither to clear all")
+		return
+	}
+
+	log.Printf("cleared %d readings", removed)
+	writeJSON(w, http.StatusOK, map[string]int{"removed": removed})
 }
 
 func (s *server) addMeasurement(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +286,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
-		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
 			h.Set("Access-Control-Allow-Private-Network", "true")

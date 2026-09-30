@@ -14,10 +14,14 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font-family: "Segoe UI", system-ui, sans-serif; }
-  header { display: flex; justify-content: space-between; align-items: baseline;
+  header { display: flex; justify-content: space-between; align-items: center;
            padding: 18px 28px; border-bottom: 1px solid var(--zone); }
   h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .actions { display: flex; align-items: center; gap: 14px; }
   #status { color: var(--muted); font-size: 13px; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--zone);
+                 border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  button.ghost:hover { border-color: var(--bad); color: var(--bad); }
   main { padding: 20px 28px; display: grid; gap: 18px; }
   .card { background: var(--card); border-radius: 10px; padding: 16px 18px; }
   .card-head { display: flex; justify-content: space-between; align-items: center;
@@ -53,17 +57,24 @@
   .alerts li { color: var(--bad); padding: 2px 0; }
   .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   .empty { color: var(--muted); }
+  .start h2 { margin: 0 0 8px; font-size: 17px; }
+  .start p { color: var(--muted); margin: 6px 0; line-height: 1.5; }
+  .start code { background: var(--bg); color: var(--text); padding: 2px 7px; border-radius: 4px; }
 </style>
 </head>
 <body>
 <header>
   <h1>SPC Monitor</h1>
-  <div id="status">Connecting...</div>
+  <div class="actions">
+    <div id="status">Connecting...</div>
+    <button class="ghost" id="clearBtn" title="Remove all readings so charts and baselines start fresh. Spec limits are kept.">Clear data</button>
+  </div>
 </header>
 <main id="charts"></main>
 
 <script>
 const REFRESH_MS = 2000;
+const MONITOR_URL = "http://localhost:8090";
 const W = 800, PAD = { l: 50, r: 20 };
 
 function esc(s) {
@@ -236,7 +247,7 @@ async function refresh() {
     const series = await getJSON("/series");
     const container = document.getElementById("charts");
     if (series.length === 0) {
-      container.innerHTML = `<p class="empty">No data yet. Start the generator to send readings.</p>`;
+      container.innerHTML = `<p class="empty">No data yet. Start the generator or the plant simulator to send readings.</p>`;
     } else {
       const cards = await Promise.all(series.map(renderSeries));
       container.replaceChildren(...cards);
@@ -247,8 +258,51 @@ async function refresh() {
   }
 }
 
-refresh();
-setInterval(refresh, REFRESH_MS);
+async function clearData() {
+  if (!confirm("Clear all readings? Charts and baselines will start over. Spec limits are kept.")) return;
+  const status = document.getElementById("status");
+  try {
+    const r = await fetch("/series", { method: "DELETE" });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || r.statusText);
+    status.textContent = `Cleared ${body.removed} readings`;
+    await refresh();
+  } catch (e) {
+    status.textContent = "Clear failed: " + e.message;
+  }
+}
+
+// Opened straight from disk: go to the running monitor, or explain how to start it.
+async function fileMode() {
+  document.getElementById("clearBtn").hidden = true;
+  const tryOpen = async () => {
+    try {
+      const r = await fetch(MONITOR_URL + "/health");
+      if (r.ok) { location.href = MONITOR_URL; return true; }
+    } catch (e) { /* not running yet */ }
+    return false;
+  };
+  if (await tryOpen()) return;
+
+  document.getElementById("status").textContent = "Monitor not running";
+  document.getElementById("charts").innerHTML = `
+    <section class="card start">
+      <h2>The SPC monitor isn't running</h2>
+      <p>This page was opened as a file. The dashboard is served by the monitor itself. Start it from the project folder with:</p>
+      <p><code>go run ./cmd/spc-monitor</code></p>
+      <p>This page will open the dashboard automatically as soon as the monitor starts.</p>
+    </section>`;
+  setInterval(tryOpen, 3000);
+}
+
+document.getElementById("clearBtn").onclick = clearData;
+
+if (location.protocol === "file:") {
+  fileMode();
+} else {
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+}
 </script>
 </body>
 </html>

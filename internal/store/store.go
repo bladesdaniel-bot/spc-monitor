@@ -70,3 +70,25 @@ func (s *Store) Series() []SeriesInfo {
 	})
 	return out
 }
+
+// ClearAll removes every series and returns how many readings were removed.
+func (s *Store) ClearAll() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, ms := range s.series {
+		n += len(ms)
+	}
+	s.series = make(map[string][]Measurement)
+	return n
+}
+
+// ClearSeries removes one series and returns how many readings were removed.
+func (s *Store) ClearSeries(station, characteristic string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := key(station, characteristic)
+	n := len(s.series[k])
+	delete(s.series, k)
+	return n
+}
