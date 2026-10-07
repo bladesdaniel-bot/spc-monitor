@@ -1,5 +1,7 @@
 # SPC Monitor
 
+**Demo video:** [Watch the simulator running](EV%20Battery%20%26%20SPC%20Monitor%20Video/Spc-%26-Production%20Line%20Monitor-Video.mp4)
+
 A real-time **statistical process control** service written in Go. It takes in measurements from production stations, learns what "normal" looks like for each one, and flags process drift **before** it turns into defective parts.
 
 It's built to pair with the [EV Battery Plant Simulator](https://github.com/bladesdaniel-bot/ev-battery-plant-simulator). Together they form a closed loop: a hidden process problem starts, the monitor detects it, and an automated maintenance crew is dispatched to fix the root cause, with no human in the loop.
